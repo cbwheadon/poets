@@ -1,0 +1,107 @@
+Questions = new Meteor.Collection("keats");
+Answers = new Meteor.Collection("answers");
+Games = new Meteor.Collection("games");
+
+Meteor.publish("games", function(id) {
+    return Games.find({_id:id});
+});
+
+Meteor.startup(function () {
+
+});
+
+makeHint = function(response, answer){
+    if (response.length == 0) response = " ";
+    var score = 0;
+    var resp_c = response.split('');
+    var answer_c = answer.split('');
+    var chars = Array(answer_c.length+1).join('_').split('');
+    var max_score = answer_c.length;
+    
+    for (var i=0; i<resp_c.length; i++){
+	if(resp_c[i] == answer_c[i]||i==0){
+	    score ++;
+	    chars[i] = answer_c[i];
+	}
+    }
+    var pct = score/max_score;
+    str = chars.join();
+    str = str.replace(/,/g,'');
+    return [str.replace(/_/g,'_ '),pct];
+};
+
+Meteor.methods({
+    hint: function (game_id, word){
+	game = Games.findOne({_id:game_id},{fields:{current_q:1,halflife:1}});
+	if (game){
+	    question = Questions.findOne({_id:game['current_q']},{fields:{answer:1,halflife:1}});
+	    if (question){
+		correct = 0;
+		answer = question['answer'];
+		var out = makeHint(word, answer);
+		var hint = out[0];
+		var pct = out[1];
+		halflife_inc = game['halflife'];
+		if (pct==1){
+		    var state = "right";
+		    correct = 1;
+		    halflife_inc = question['halflife'] + 1;
+		    console.log(halflife_inc);
+		} else if (pct>0.66){
+		    var state = "blue";
+		} else if (pct>0.33){
+		    var state = "amber";
+		} else {
+		    var state = "wrong";
+		}
+		Games.update({_id:game_id},{$set:{halflife:halflife_inc,hint:hint,pct:pct, state: state}});
+	    }
+	}
+    }, 
+    getNextQuestion: function (game_id) {
+        var progress = Games.findOne({_id:game_id},{fields:{qids:1,halflife:1}});
+        if(progress){
+	    var done = progress['qids'] || [];
+	    var halflife = progress['halflife'];
+	    var harder = Questions.find({$and:[{"halflife":{$gte:halflife}},{context:{$exists:true}},{ngrams:{$exists:true}},{_id:{$nin:done}}]},{fields:{halflife:1},sort:{halflife:1},limit:5}).fetch();
+	    var easier = Questions.find({$and:[{"halflife":{$lt:halflife}},{context:{$exists:true}},{ngrams:{$exists:true}},{_id:{$nin:done}}]},{fields:{halflife:1},sort:{halflife:-1},limit:5}).fetch();
+
+      	    if (harder && easier) {
+	        //get a random one
+	        //harder or easier collection
+	        if(harder.length==0){
+		    var docs = easier;
+	        } else if (easier.length==0){
+		    var docs = harder;
+	        } else {
+		    //pick one
+		    if (Math.random()>0.5){
+		        var docs = harder;
+		    } else {
+		        var docs = easier;
+		    }
+	        }
+	        var grab = Math.floor(Math.random() * (docs.length));
+	        var doc_id = docs[grab]['_id'];
+		if (doc_id){
+		    //retrieve full doc from server
+		    doc = Questions.findOne({_id:doc_id});		    
+		    if(doc){
+
+			var ngrams = doc['ngrams'];
+			var wd = doc['answer'];
+			console.log(wd);
+			var hint = makeHint(" ",wd)[0];
+			var qhalf = doc['halflife'].toFixed(2);
+			n = Questions.find({halflife:{$gt:doc['halflife']}}).count();
+			Games.update({_id:game_id},{$push:{qids:doc['_id']},$set:{hint: hint, ngrams:ngrams, pct: 0, qhalf:qhalf,n:n,current_q:doc['_id'],context:doc['context']}});
+		    }
+		}
+	    }
+	}
+    }
+});
+
+
+
+
